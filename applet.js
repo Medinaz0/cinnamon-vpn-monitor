@@ -21,9 +21,12 @@ const PopupMenu = imports.ui.popupMenu;
 const Util  = imports.misc.util;
 
 // ---------------------------------------------------------------------------
-// VpnMonitor — detección de interfaz VPN
+// VpnMonitor — detección de interfaz VPN (asíncrona)
 // ---------------------------------------------------------------------------
-//   check() → { connected: bool, ip: string|null, error: string|null }
+//   Se usa Gio.Subprocess asíncrono en vez de GLib.spawn_command_line_sync
+//   para NO bloquear el main loop de Cinnamon y evitar warnings de freeze.
+//
+//   check(callback) → callback({ connected: bool, ip: string|null, error })
 //
 //   Usa `ip -4 addr show <iface>` que devuelve algo como:
 //     7: tun0: <POINTOPOINT,MULTICAST,NOARP,UP> mtu 1500 qdisc fq_codel ...
@@ -42,53 +45,58 @@ var VpnMonitor = class VpnMonitor {
     }
 
     /**
-     * Ejecuta el chequeo de la interfaz.
-     * @returns {{ connected: boolean, ip: (string|null), error: (string|null) }}
+     * Ejecuta el chequeo de la interfaz de forma asíncrona.
+     * No bloquea el main loop de Cinnamon.
+     * @param {Function} callback — recibe { connected, ip, error }
      */
-    check() {
+    check(callback) {
         try {
-            let [ok, stdout, stderr] = GLib.spawn_command_line_sync(
-                `ip -4 addr show ${this._interfaceName}`
+            let proc = Gio.Subprocess.new(
+                ['ip', '-4', 'addr', 'show', this._interfaceName],
+                Gio.SubprocessFlags.STDOUT_PIPE | Gio.SubprocessFlags.STDERR_PIPE
             );
 
-            // La interfaz no existe o el comando falló
-            if (!ok || !stdout || stdout.length === 0) {
-                return { connected: false, ip: null, error: null };
-            }
+            proc.communicate_utf8_async(null, null, (proc_, res) => {
+                try {
+                    let [ok, stdout, stderr] = proc_.communicate_utf8_finish(res);
 
-            // Convertir el buffer (Uint8Array) a string de forma segura
-            let output = this._bytesToString(stdout).trim();
-            if (!output) {
-                return { connected: false, ip: null, error: null };
-            }
+                    // La interfaz no existe o el comando falló
+                    if (!ok || !stdout || stdout.length === 0) {
+                        callback({ connected: false, ip: null, error: null });
+                        return;
+                    }
 
-            // Buscar "inet <IP>" en la salida
-            let match = output.match(/inet\s+(\d+\.\d+\.\d+\.\d+)/);
-            if (match && match[1]) {
-                return { connected: true, ip: match[1], error: null };
-            }
+                    let output = stdout.trim();
+                    if (!output) {
+                        callback({ connected: false, ip: null, error: null });
+                        return;
+                    }
 
-            // La interfaz existe pero no tiene IP asignada
-            return { connected: false, ip: null, error: null };
+                    // Buscar "inet <IP>" en la salida
+                    let match = output.match(/inet\s+(\d+\.\d+\.\d+\.\d+)/);
+                    if (match && match[1]) {
+                        callback({ connected: true, ip: match[1], error: null });
+                        return;
+                    }
 
+                    // La interfaz existe pero no tiene IP asignada
+                    callback({ connected: false, ip: null, error: null });
+
+                } catch (e) {
+                    callback({
+                        connected: false,
+                        ip: null,
+                        error: `Error al leer salida: ${e.message}`
+                    });
+                }
+            });
         } catch (e) {
-            return { connected: false, ip: null, error: `Error al ejecutar ip: ${e.message}` };
+            callback({
+                connected: false,
+                ip: null,
+                error: `Error al ejecutar ip: ${e.message}`
+            });
         }
-    }
-
-    /**
-     * Convierte un Uint8Array (o GLib.Bytes) a string UTF-8.
-     */
-    _bytesToString(bytes) {
-        if (!bytes) return '';
-        if (typeof bytes === 'string') return bytes;
-
-        // Soporte para Uint8Array y array-like
-        let chunk = [];
-        for (let i = 0; i < bytes.length; i++) {
-            chunk.push(String.fromCharCode(bytes[i]));
-        }
-        return chunk.join('');
     }
 };
 
@@ -115,6 +123,7 @@ var VpnApplet = class VpnApplet extends Applet.TextIconApplet {
         this._connected  = false;
         this._currentIp  = null;
         this._timeoutId  = null;
+        this._checking   = false; // evita solapamiento de chequeos async
 
         // Construir UI y menú
         this._initUI();
@@ -131,10 +140,14 @@ var VpnApplet = class VpnApplet extends Applet.TextIconApplet {
      * Prepara la apariencia inicial del applet.
      */
     _initUI() {
-        this.set_applet_label('● VPN ...');
+        if (this._label) {
+            this._label.clutter_text.set_markup(
+                '<span foreground="#9E9E9E">● VPN ...</span>'
+            );
+        }
         this.set_applet_tooltip('VPN Monitor — iniciando...');
 
-        // Clases CSS para personalización vía stylesheet.css
+        // Clases CSS para padding/estructura (no para color)
         this.actor.add_style_class_name('vpn-applet');
         if (this._label) {
             this._label.add_style_class_name('vpn-label');
@@ -224,77 +237,75 @@ var VpnApplet = class VpnApplet extends Applet.TextIconApplet {
     }
 
     /**
-     * Ejecuta un chequeo completo y actualiza UI + menú.
+     * Inicia un chequeo asíncrono y actualiza UI + menú al recibir respuesta.
+     * Si ya hay un chequeo en vuelo, salta esta ejecución para evitar solapamiento.
      */
     _refresh() {
-        let result = this._monitor.check();
-        this._connected = result.connected;
-        this._currentIp = result.ip;
+        if (this._checking) return; // ya hay uno en progreso
 
-        this._updateDisplay(result);
-        this._updateMenuState();
+        this._checking = true;
+        this._monitor.check((result) => {
+            this._checking = false;
+            this._connected = result.connected;
+            this._currentIp = result.ip;
+
+            this._updateDisplay(result);
+            this._updateMenuState();
+        });
     }
 
 
     // =================== Actualización visual ===================
 
     /**
-     * Actualiza el label del panel y el tooltip según el resultado.
+     * Actualiza el label del panel (con Pango markup) y el tooltip.
+     *
+     * Se usa clutter_text.set_markup() con <span foreground="...">
+     * en vez de set_applet_label() para que el color lo decida el applet
+     * y ningún tema de Cinnamon lo pueda sobrescribir.
+     *
      * @param {{ connected, ip, error }} result — salida de VpnMonitor.check()
      */
     _updateDisplay(result) {
+        let foreground;
+        let labelText;
+        let tooltipText;
+
         // --- Error ---
         if (result.error) {
-            this.set_applet_label('● VPN ERR');
-            this.set_applet_tooltip(`VPN Monitor — ${result.error}`);
-            this._setStyle('error');
-            return;
-        }
+            foreground = '#F44336';
+            labelText  = '● VPN ERR';
+            tooltipText = `VPN Monitor — ${result.error}`;
 
         // --- Conectada ---
-        if (result.connected && result.ip) {
-            this.set_applet_label(`● VPN  ${result.ip}`);
-            this.set_applet_tooltip(
-                [
-                    `VPN — Conectada`,
-                    `Interfaz: tun0`,
-                    `IP: ${result.ip}`,
-                    `Estado: Activa`,
-                    `Última actualización: hace unos segundos`
-                ].join('\n')
-            );
-            this._setStyle('connected');
-            return;
-        }
+        } else if (result.connected && result.ip) {
+            foreground = '#4CAF50';
+            labelText  = `● VPN  ${result.ip}`;
+            tooltipText = [
+                'VPN — Conectada',
+                'Interfaz: tun0',
+                `IP: ${result.ip}`,
+                'Estado: Activa'
+            ].join('\n');
 
         // --- Desconectada ---
-        this.set_applet_label('● VPN  OFF');
-        this.set_applet_tooltip(
-            [
-                `VPN — Desconectada`,
-                `Interfaz: tun0`,
-                `Estado: Inactiva`,
-                `Última actualización: hace unos segundos`
-            ].join('\n')
-        );
-        this._setStyle('disconnected');
-    }
-
-    /**
-     * Aplica el color correspondiente al estado actual vía estilo inline.
-     * Se usa set_style() en vez de clases CSS para evitar que el tema
-     * de Cinnamon sobrescriba los colores.
-     * @param {'connected'|'disconnected'|'error'} state
-     */
-    _setStyle(state) {
-        let colors = {
-            connected: '#4CAF50',
-            disconnected: '#9E9E9E',
-            error: '#F44336'
-        };
-        if (this._label) {
-            this._label.set_style(`color: ${colors[state]};`);
+        } else {
+            foreground = '#9E9E9E';
+            labelText  = '● VPN  OFF';
+            tooltipText = [
+                'VPN — Desconectada',
+                'Interfaz: tun0',
+                'Estado: Inactiva'
+            ].join('\n');
         }
+
+        // Aplicar Pango markup con color inline
+        if (this._label) {
+            this._label.clutter_text.set_markup(
+                `<span foreground="${foreground}">${labelText}</span>`
+            );
+        }
+        this.set_applet_tooltip(tooltipText);
     }
 
     /**
