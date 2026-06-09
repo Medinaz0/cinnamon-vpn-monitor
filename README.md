@@ -22,16 +22,9 @@ git clone https://github.com/medinaz0/cinnamon-vpn-monitor.git
 cp -r cinnamon-vpn-monitor/vpnmonitor@medinaz0 ~/.local/share/cinnamon/applets/
 
 # 3. Recargar Cinnamon
-cinnamon --replace &
+ctrl + alt + esc
 
 # 4. Click derecho en panel → Applets → + VPN Monitor
-```
-
-### Instalación manual (sin clonar)
-
-```bash
-mkdir -p ~/.local/share/cinnamon/applets/vpnmonitor@medinaz0
-# Copiar applet.js, metadata.json y stylesheet.css al directorio
 ```
 
 Luego recargar Cinnamon y agregar desde la interfaz de Applets.
@@ -62,7 +55,6 @@ Los colores de estado se definen en `stylesheet.css`. Podés cambiarlos editando
 .vpn-disconnected { color: #9E9E9E; }  /* gris */
 .vpn-error        { color: #F44336; }  /* rojo */
 ```
-
 ## Extender a otras interfaces
 
 Por defecto monitorea `tun0`. Para cambiar la interfaz es tan simple como:
