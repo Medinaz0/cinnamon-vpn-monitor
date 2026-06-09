@@ -129,6 +129,9 @@ var VpnApplet = class VpnApplet extends Applet.TextIconApplet {
      * Prepara la apariencia inicial del applet.
      */
     _initUI() {
+        // set_applet_label es necesario para que Cinnamon gestione el layout
+        // del label. set_markup pisa el color via Pango inmediatamente despues.
+        this.set_applet_label('● VPN ...');
         if (this._label) {
             this._label.clutter_text.set_markup(
                 '<span foreground="#9E9E9E">● VPN ...</span>'
@@ -282,7 +285,9 @@ var VpnApplet = class VpnApplet extends Applet.TextIconApplet {
             ].join('\n');
         }
 
-        // Aplicar Pango markup con color inline
+        // set_applet_label para que Cinnamon maneje el layout del label.
+        // set_markup pisa el color via Pango inmediatamente despues.
+        this.set_applet_label(labelText);
         if (this._label) {
             this._label.clutter_text.set_markup(
                 `<span foreground="${foreground}">${labelText}</span>`
