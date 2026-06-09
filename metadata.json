@@ -1,0 +1,6 @@
+{
+    "uuid": "vpnmonitor@medinaz0",
+    "name": "VPN Monitor",
+    "icon": "network-vpn",
+    "description": "Monitorea el estado de interfaces VPN (tun0) y muestra la IP asignada en el panel"
+}

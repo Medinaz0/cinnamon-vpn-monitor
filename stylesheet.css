@@ -1,0 +1,34 @@
+/* ---------------------------------------------------------------------------
+   VPN Monitor — stylesheet.css
+   ---------------------------------------------------------------------------
+   Cinnamon carga automáticamente este archivo cuando el applet se inicia.
+   Las clases se aplican desde applet.js según el estado de la VPN.
+   --------------------------------------------------------------------------- */
+
+/* Contenedor principal del applet */
+.vpn-applet {
+    padding: 0 2px;
+}
+
+/* Etiqueta de texto que muestra el estado */
+.vpn-label {
+    padding: 0 4px;
+    font-weight: normal;
+}
+
+/* ──── Estados ──── */
+
+/* VPN conectada — texto en verde */
+.vpn-connected {
+    color: #4CAF50;
+}
+
+/* VPN desconectada — texto en gris */
+.vpn-disconnected {
+    color: #9E9E9E;
+}
+
+/* Error — texto en rojo */
+.vpn-error {
+    color: #F44336;
+}
