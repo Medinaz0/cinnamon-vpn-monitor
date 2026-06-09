@@ -281,19 +281,19 @@ var VpnApplet = class VpnApplet extends Applet.TextIconApplet {
     }
 
     /**
-     * Aplica la clase CSS correspondiente al estado actual.
+     * Aplica el color correspondiente al estado actual vía estilo inline.
+     * Se usa set_style() en vez de clases CSS para evitar que el tema
+     * de Cinnamon sobrescriba los colores.
      * @param {'connected'|'disconnected'|'error'} state
      */
     _setStyle(state) {
-        ['connected', 'disconnected', 'error'].forEach(cls => {
-            this.actor.remove_style_class_name(`vpn-${cls}`);
-            if (this._label) {
-                this._label.remove_style_class_name(`vpn-${cls}`);
-            }
-        });
-        this.actor.add_style_class_name(`vpn-${state}`);
+        let colors = {
+            connected: '#4CAF50',
+            disconnected: '#9E9E9E',
+            error: '#F44336'
+        };
         if (this._label) {
-            this._label.add_style_class_name(`vpn-${state}`);
+            this._label.set_style(`color: ${colors[state]};`);
         }
     }
 
