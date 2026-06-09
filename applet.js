@@ -14,19 +14,15 @@
 
 const Applet = imports.ui.applet;
 const GLib  = imports.gi.GLib;
-const Gio   = imports.gi.Gio;
 const St    = imports.gi.St;
 const Mainloop = imports.mainloop;
 const PopupMenu = imports.ui.popupMenu;
 const Util  = imports.misc.util;
 
 // ---------------------------------------------------------------------------
-// VpnMonitor — detección de interfaz VPN (asíncrona)
+// VpnMonitor — detección de interfaz VPN (síncrona)
 // ---------------------------------------------------------------------------
-//   Se usa Gio.Subprocess asíncrono en vez de GLib.spawn_command_line_sync
-//   para NO bloquear el main loop de Cinnamon y evitar warnings de freeze.
-//
-//   check(callback) → callback({ connected: bool, ip: string|null, error })
+//   check() → { connected: bool, ip: string|null, error: string|null }
 //
 //   Usa `ip -4 addr show <iface>` que devuelve algo como:
 //     7: tun0: <POINTOPOINT,MULTICAST,NOARP,UP> mtu 1500 qdisc fq_codel ...
@@ -45,58 +41,52 @@ var VpnMonitor = class VpnMonitor {
     }
 
     /**
-     * Ejecuta el chequeo de la interfaz de forma asíncrona.
-     * No bloquea el main loop de Cinnamon.
-     * @param {Function} callback — recibe { connected, ip, error }
+     * Ejecuta el chequeo de la interfaz.
+     * @returns {{ connected: boolean, ip: (string|null), error: (string|null) }}
      */
-    check(callback) {
+    check() {
         try {
-            let proc = Gio.Subprocess.new(
-                ['ip', '-4', 'addr', 'show', this._interfaceName],
-                Gio.SubprocessFlags.STDOUT_PIPE | Gio.SubprocessFlags.STDERR_PIPE
+            let [ok, stdout, stderr] = GLib.spawn_command_line_sync(
+                `ip -4 addr show ${this._interfaceName}`
             );
 
-            proc.communicate_utf8_async(null, null, (proc_, res) => {
-                try {
-                    let [ok, stdout, stderr] = proc_.communicate_utf8_finish(res);
+            // La interfaz no existe o el comando falló
+            if (!ok || !stdout || stdout.length === 0) {
+                return { connected: false, ip: null, error: null };
+            }
 
-                    // La interfaz no existe o el comando falló
-                    if (!ok || !stdout || stdout.length === 0) {
-                        callback({ connected: false, ip: null, error: null });
-                        return;
-                    }
+            // Convertir el buffer (Uint8Array) a string de forma segura
+            let output = this._bytesToString(stdout).trim();
+            if (!output) {
+                return { connected: false, ip: null, error: null };
+            }
 
-                    let output = stdout.trim();
-                    if (!output) {
-                        callback({ connected: false, ip: null, error: null });
-                        return;
-                    }
+            // Buscar "inet <IP>" en la salida
+            let match = output.match(/inet\s+(\d+\.\d+\.\d+\.\d+)/);
+            if (match && match[1]) {
+                return { connected: true, ip: match[1], error: null };
+            }
 
-                    // Buscar "inet <IP>" en la salida
-                    let match = output.match(/inet\s+(\d+\.\d+\.\d+\.\d+)/);
-                    if (match && match[1]) {
-                        callback({ connected: true, ip: match[1], error: null });
-                        return;
-                    }
+            // La interfaz existe pero no tiene IP asignada
+            return { connected: false, ip: null, error: null };
 
-                    // La interfaz existe pero no tiene IP asignada
-                    callback({ connected: false, ip: null, error: null });
-
-                } catch (e) {
-                    callback({
-                        connected: false,
-                        ip: null,
-                        error: `Error al leer salida: ${e.message}`
-                    });
-                }
-            });
         } catch (e) {
-            callback({
-                connected: false,
-                ip: null,
-                error: `Error al ejecutar ip: ${e.message}`
-            });
+            return { connected: false, ip: null, error: `Error al ejecutar ip: ${e.message}` };
         }
+    }
+
+    /**
+     * Convierte un Uint8Array (o GLib.Bytes) a string UTF-8.
+     */
+    _bytesToString(bytes) {
+        if (!bytes) return '';
+        if (typeof bytes === 'string') return bytes;
+
+        let chunk = [];
+        for (let i = 0; i < bytes.length; i++) {
+            chunk.push(String.fromCharCode(bytes[i]));
+        }
+        return chunk.join('');
     }
 };
 
@@ -123,7 +113,6 @@ var VpnApplet = class VpnApplet extends Applet.TextIconApplet {
         this._connected  = false;
         this._currentIp  = null;
         this._timeoutId  = null;
-        this._checking   = false; // evita solapamiento de chequeos async
 
         // Construir UI y menú
         this._initUI();
@@ -237,21 +226,15 @@ var VpnApplet = class VpnApplet extends Applet.TextIconApplet {
     }
 
     /**
-     * Inicia un chequeo asíncrono y actualiza UI + menú al recibir respuesta.
-     * Si ya hay un chequeo en vuelo, salta esta ejecución para evitar solapamiento.
+     * Ejecuta un chequeo y actualiza UI + menú.
      */
     _refresh() {
-        if (this._checking) return; // ya hay uno en progreso
+        let result = this._monitor.check();
+        this._connected = result.connected;
+        this._currentIp = result.ip;
 
-        this._checking = true;
-        this._monitor.check((result) => {
-            this._checking = false;
-            this._connected = result.connected;
-            this._currentIp = result.ip;
-
-            this._updateDisplay(result);
-            this._updateMenuState();
-        });
+        this._updateDisplay(result);
+        this._updateMenuState();
     }
 
 
